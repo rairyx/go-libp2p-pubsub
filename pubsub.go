@@ -21,6 +21,20 @@ import (
 	timecache "github.com/whyrusleeping/timecache"
 )
 
+
+
+const (
+	defaultValidateTimeout     = 150 * time.Millisecond
+	defaultValidateConcurrency = 100
+	defaultValidateThrottle    = 8192
+)
+
+type dandelionPhase int
+const (
+      stem    dandelionPhase = iota
+      fluff
+)
+
 var (
 	TimeCacheDuration = 120 * time.Second
 )
@@ -42,6 +56,7 @@ type PubSub struct {
 
 	val *validation
 
+	phase dandelionPhase 
 	// incoming messages from other peers
 	incoming chan *RPC
 
@@ -262,6 +277,17 @@ func WithBlacklist(b Blacklist) Option {
 	}
 }
 
+func getPhase() dandelionPhase {
+	phase := stem
+	rand.Seed(time.Now().UnixNano())
+	switch rand.Intn(2) {
+		case 0:
+			phase = stem
+		case 1:
+			phase = fluff
+	}
+        return phase
+}
 // processLoop handles all inputs arriving on the channels
 func (p *PubSub) processLoop(ctx context.Context) {
 	defer func() {
@@ -293,7 +319,7 @@ func (p *PubSub) processLoop(ctx context.Context) {
 
 		case s := <-p.newPeerStream:
 			pid := s.Conn().RemotePeer()
-
+                        log.Infof("new stream from peer:", pid)
 			ch, ok := p.peers[pid]
 			if !ok {
 				log.Warning("new stream for unknown peer: ", pid)
@@ -366,13 +392,17 @@ func (p *PubSub) processLoop(ctx context.Context) {
 				peers = append(peers, p)
 			}
 			preq.resp <- peers
+		//handle all kinds of incoming messages: control, messages ..
 		case rpc := <-p.incoming:
+			log.Infof("Incoming rpc message")
 			p.handleIncomingRPC(rpc)
-
+                //messages published from local node  
 		case msg := <-p.publish:
+			log.Infof("sending message %s",msg.Message.String())
 			p.pushMsg(p.host.ID(), msg)
-
+                //validated messages sent from local node or relayed from peer 
 		case req := <-p.sendMsg:
+			log.Infof("sending validated message %s",req.msg.Message.String())
 			p.publishMessage(req.from, req.msg.Message)
 
 		case req := <-p.addVal:
@@ -425,6 +455,35 @@ func (p *PubSub) handleRemoveSubscription(sub *Subscription) {
 		p.announce(sub.topic, false)
 		p.rt.Leave(sub.topic)
 	}
+}
+
+func (p *PubSub) relayStem(msg *pb.Message) {
+ //       id := msgID(msg.Message)
+//	if p.seenMessage(id) {
+//		return
+//	}
+//	p.markSeen(id)
+        out := rpcWithMessages(msg)
+        i := rand.Intn(len(p.peers))
+        var pid peer.ID
+	for k := range p.peers{
+		if i == 0 {
+			pid=k
+		  break
+	  }
+		i--
+	}
+	mch, ok := p.peers[pid]
+        if !ok {
+			return
+	}
+	select {
+		case mch <- out:
+	                log.Infof("message relayed to peer %s", pid)
+		default:
+			log.Infof("dropping message to peer %s: queue full", pid)
+			// Drop it. The peer is too slow.
+        }
 }
 
 // handleAddSubscription adds a Subscription for a particular topic. If it is
