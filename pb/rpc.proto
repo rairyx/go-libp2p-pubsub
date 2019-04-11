@@ -21,6 +21,7 @@ message Message {
 	repeated string topicIDs = 4;
 	optional bytes signature = 5;
 	optional bytes key = 6;
+        optional string state =7;
 }
 
 message ControlMessage {
