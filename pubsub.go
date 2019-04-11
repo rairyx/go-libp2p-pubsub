@@ -29,10 +29,11 @@ const (
 	defaultValidateThrottle    = 8192
 )
 
-type dandelionPhase int
+type dandelionPhase int 
+
 const (
-      stem    dandelionPhase = iota
-      fluff
+       stem dandelionPhase = 0
+       fluff
 )
 
 var (
@@ -148,6 +149,11 @@ type PubSubRouter interface {
 	Leave(topic string)
 }
 
+type Message_State int32
+const (
+        Dandelion_STEM       Message_State = 0 
+        Dandelion_FLUFF      Message_State = 1 
+)
 type Message struct {
 	*pb.Message
 }
@@ -391,13 +397,13 @@ func (p *PubSub) processLoop(ctx context.Context) {
 				}
 				peers = append(peers, p)
 			}
-			preq.resp <- peers
+			preq.resp <-peers 
 		//handle all kinds of incoming messages: control, messages ..
 		case rpc := <-p.incoming:
 			log.Infof("Incoming rpc message")
 			p.handleIncomingRPC(rpc)
-                //messages published from local node  
-		case msg := <-p.publish:
+                //messages published from local node  		
+	        case msg := <-p.publish:
 			log.Infof("sending message %s",msg.Message.String())
 			p.pushMsg(p.host.ID(), msg)
                 //validated messages sent from local node or relayed from peer 
@@ -457,33 +463,34 @@ func (p *PubSub) handleRemoveSubscription(sub *Subscription) {
 	}
 }
 
-func (p *PubSub) relayStem(msg *pb.Message) {
- //       id := msgID(msg.Message)
-//	if p.seenMessage(id) {
-//		return
-//	}
-//	p.markSeen(id)
-        out := rpcWithMessages(msg)
-        i := rand.Intn(len(p.peers))
-        var pid peer.ID
+func (p *PubSub) relayStem(msg *Message) {
+	log.Debugf("message item relay %s", msg.Message.String())
+	id := msgID(msg.Message)
+	if p.seenMessage(id) {
+		return
+	}
+	p.markSeen(id)
+	out := rpcWithMessages(msg.Message)
+	i := rand.Intn(len(p.peers))
+	var pid peer.ID
 	for k := range p.peers{
 		if i == 0 {
 			pid=k
-		  break
-	  }
-		i--
+			break
+		}
+		  i--
 	}
 	mch, ok := p.peers[pid]
-        if !ok {
-			return
+	if !ok {
+		return
 	}
 	select {
 		case mch <- out:
-	                log.Infof("message relayed to peer %s", pid)
+			log.Infof("stem message relayed to peer %s", pid)
 		default:
 			log.Infof("dropping message to peer %s: queue full", pid)
 			// Drop it. The peer is too slow.
-        }
+	}
 }
 
 // handleAddSubscription adds a Subscription for a particular topic. If it is
@@ -622,6 +629,7 @@ func (p *PubSub) subscribedToMsg(msg *pb.Message) bool {
 func (p *PubSub) handleIncomingRPC(rpc *RPC) {
 	for _, subopt := range rpc.GetSubscriptions() {
 		t := subopt.GetTopicid()
+                log.Debugf("received topic: %s",t)
 		if subopt.GetSubscribe() {
 			tmap, ok := p.topics[t]
 			if !ok {
@@ -644,9 +652,21 @@ func (p *PubSub) handleIncomingRPC(rpc *RPC) {
 			log.Warning("received message we didn't subscribe to. Dropping.")
 			continue
 		}
-
 		msg := &Message{pmsg}
-		p.pushMsg(rpc.from, msg)
+                log.Debugf("received messge: %s",msg.Message.String())
+		phase:= getPhase()
+		log.Debugf("dandelion phase: %d",phase)
+		if (msg.GetState() == "STEM" && phase ==stem ) {
+			p.relayStem(msg)
+		}else {
+			if (msg.GetState()  == "STEM"){
+				msgPhase:="FLUFF"
+				msg1:=pb.Message{From:msg.Message.GetFrom(),Data:msg.GetData(),Seqno:msg.GetSeqno(),TopicIDs:msg.GetTopicIDs(),Signature:msg.GetSignature(),Key:msg.GetKey(),State:&msgPhase}
+				msg= &Message{&msg1}
+
+			}
+			p.pushMsg(rpc.from, msg)
+		}
 	}
 
 	p.rt.HandleRPC(rpc)
@@ -757,11 +777,13 @@ func (p *PubSub) GetTopics() []string {
 // Publish publishes data to the given topic.
 func (p *PubSub) Publish(topic string, data []byte) error {
 	seqno := p.nextSeqno()
+	state :="STEM"
 	m := &pb.Message{
 		Data:     data,
 		TopicIDs: []string{topic},
-		From:     []byte(p.host.ID()),
+		//From:     []byte(p.host.ID()),
 		Seqno:    seqno,
+		State:    &state,
 	}
 	if p.signKey != nil {
 		m.From = []byte(p.signID)
