@@ -33,7 +33,7 @@ type dandelionPhase int
 
 const (
        stem dandelionPhase = 0
-       fluff
+       fluff dandelionPhase = 1 
 )
 
 var (
@@ -400,7 +400,7 @@ func (p *PubSub) processLoop(ctx context.Context) {
 			preq.resp <-peers 
 		//handle all kinds of incoming messages: control, messages ..
 		case rpc := <-p.incoming:
-			log.Infof("Incoming rpc message")
+			log.Infof("Incoming rpc message from %s",rpc.from)
 			p.handleIncomingRPC(rpc)
                 //messages published from local node  		
 	        case msg := <-p.publish:
@@ -463,22 +463,25 @@ func (p *PubSub) handleRemoveSubscription(sub *Subscription) {
 	}
 }
 
-func (p *PubSub) relayStem(msg *Message) {
+func (p *PubSub) relayStem(from peer.ID, msg *Message) {
 	log.Debugf("message item relay %s", msg.Message.String())
-	id := msgID(msg.Message)
-	if p.seenMessage(id) {
-		return
-	}
-	p.markSeen(id)
+//	id := msgID(msg.Message)
+//	if p.seenMessage(id) {
+//		return
+//	}
+//	p.markSeen(id)
 	out := rpcWithMessages(msg.Message)
 	i := rand.Intn(len(p.peers))
 	var pid peer.ID
 	for k := range p.peers{
 		if i == 0 {
 			pid=k
+			if pid==from || pid ==peer.ID(msg.Message.String()){
+				i++
+			}
 			break
 		}
-		  i--
+		i--
 	}
 	mch, ok := p.peers[pid]
 	if !ok {
@@ -657,7 +660,7 @@ func (p *PubSub) handleIncomingRPC(rpc *RPC) {
 		phase:= getPhase()
 		log.Debugf("dandelion phase: %d",phase)
 		if (msg.GetState() == "STEM" && phase ==stem ) {
-			p.relayStem(msg)
+			p.relayStem(rpc.from,msg)
 		}else {
 			if (msg.GetState()  == "STEM"){
 				msgPhase:="FLUFF"
