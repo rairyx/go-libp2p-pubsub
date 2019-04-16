@@ -463,6 +463,25 @@ func (p *PubSub) handleRemoveSubscription(sub *Subscription) {
 	}
 }
 
+func (p *PubSub) fluff(from peer.ID, msg *Message) {
+     out := rpcWithMessages(msg.Message)
+     for pid:= range p.peers{
+	mch, ok := p.peers[pid]
+	if !ok {
+			continue
+		}
+
+		select {
+		case mch <- out:
+		default:
+			log.Infof("dropping message to peer %s: queue full", pid)
+			// Drop it. The peer is too slow.
+		}
+       }
+       //when stemmed mesage is about to fluff,the node itself should receive the message
+       p.notifySubs(msg.Message)
+}
+
 func (p *PubSub) relayStem(from peer.ID, msg *Message) {
 	log.Debugf("message item relay %s", msg.Message.String())
 //	id := msgID(msg.Message)
@@ -695,23 +714,124 @@ func (p *PubSub) pushMsg(src peer.ID, msg *Message) {
 	}
 
 	// reject unsigned messages when strict before we even process the id
-	if p.signStrict && msg.Signature == nil {
-		log.Debugf("dropping unsigned message from %s", src)
-		return
-	}
+//	if p.signStrict && msg.Signature == nil {
+//		log.Debugf("dropping unsigned message from %s", src)
+//		return
+//	}
 
 	// have we already seen and validated this message?
-	id := msgID(msg.Message)
-	if p.seenMessage(id) {
-		return
-	}
+	//id := msgID(msg.Message)
+	//if p.seenMessage(id) {
+	//	return
+	//}
 
 	if !p.val.Push(src, msg) {
 		return
 	}
 
-	if p.markSeen(id) {
+	if msg.GetState() == "FLUFF" {
+		msgPhase := "FLUFFED"  
+		msg1:=pb.Message{From:msg.Message.GetFrom(),Data:msg.GetData(),Seqno:msg.GetSeqno(),TopicIDs:msg.GetTopicIDs(),Signature:msg.GetSignature(),Key:msg.GetKey(),State:&msgPhase}
+		msg = &Message{&msg1}
+		p.fluff(msg.GetFrom(),msg)
+        }else{
 		p.publishMessage(src, msg.Message)
+        }
+}
+
+// validate performs validation and only sends the message if all validators succeed
+func (p *PubSub) validate(vals []*topicVal, src peer.ID, msg *Message) {
+	if msg.Signature != nil {
+		if !p.validateSignature(msg) {
+			log.Warningf("message signature validation failed; dropping message from %s", src)
+			return
+		}
+	}
+
+	if len(vals) > 0 {
+		if !p.validateTopic(vals, src, msg) {
+			log.Warningf("message validation failed; dropping message from %s", src)
+			return
+		}
+	}
+
+	// all validators were successful, send the message
+	p.sendMsg <- &sendReq{
+		from: src,
+		msg:  msg,
+	}
+}
+
+func (p *PubSub) validateSignature(msg *Message) bool {
+	err := verifyMessageSignature(msg.Message)
+	if err != nil {
+		log.Debugf("signature verification error: %s", err.Error())
+		return false
+	}
+
+	return true
+}
+
+func (p *PubSub) validateTopic(vals []*topicVal, src peer.ID, msg *Message) bool {
+	if len(vals) == 1 {
+		return p.validateSingleTopic(vals[0], src, msg)
+	}
+
+	ctx, cancel := context.WithCancel(p.ctx)
+	defer cancel()
+
+	rch := make(chan bool, len(vals))
+	rcount := 0
+	throttle := false
+
+loop:
+	for _, val := range vals {
+		rcount++
+
+		select {
+		case val.validateThrottle <- struct{}{}:
+			go func(val *topicVal) {
+				rch <- val.validateMsg(ctx, src, msg)
+				<-val.validateThrottle
+			}(val)
+
+		default:
+			log.Debugf("validation throttled for topic %s", val.topic)
+			throttle = true
+			break loop
+		}
+	}
+
+	if throttle {
+		return false
+	}
+
+	for i := 0; i < rcount; i++ {
+		valid := <-rch
+		if !valid {
+			return false
+		}
+	}
+
+	return true
+}
+
+// fast path for single topic validation that avoids the extra goroutine
+func (p *PubSub) validateSingleTopic(val *topicVal, src peer.ID, msg *Message) bool {
+	select {
+	case val.validateThrottle <- struct{}{}:
+		ctx, cancel := context.WithCancel(p.ctx)
+		defer cancel()
+
+		res := val.validateMsg(ctx, src, msg)
+		<-val.validateThrottle
+
+		return res
+
+	default:
+		log.Debugf("validation throttled for topic %s", val.topic)
+		return false
+>>>>>>> Separate fluff phase from pub/sub
 	}
 }
 
