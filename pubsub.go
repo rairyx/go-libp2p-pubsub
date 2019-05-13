@@ -463,9 +463,19 @@ func (p *PubSub) handleRemoveSubscription(sub *Subscription) {
 	}
 }
 
-func (p *PubSub) fluff(from peer.ID, msg *Message) {
-     out := rpcWithMessages(msg.Message)
+func (p *PubSub) fluff(from peer.ID, pmsg *pb.Message) {
+     id := msgID(pmsg)
+     if p.seenMessage(id) {
+		return
+     }
+     p.markSeen(id)
+
+
+     out := rpcWithMessages(pmsg)
      for pid:= range p.peers{
+	if pid == from || pid == peer.ID(pmsg.GetFrom()) {
+			continue
+	}
 	mch, ok := p.peers[pid]
 	if !ok {
 			continue
@@ -479,7 +489,7 @@ func (p *PubSub) fluff(from peer.ID, msg *Message) {
 		}
        }
        //when stemmed mesage is about to fluff,the node itself should receive the message
-       p.notifySubs(msg.Message)
+       p.notifySubs(pmsg)
 }
 
 func (p *PubSub) relayStem(from peer.ID, msg *Message) {
@@ -719,11 +729,6 @@ func (p *PubSub) pushMsg(src peer.ID, msg *Message) {
 //		return
 //	}
 
-	// have we already seen and validated this message?
-	//id := msgID(msg.Message)
-	//if p.seenMessage(id) {
-	//	return
-	//}
 
 	if !p.val.Push(src, msg) {
 		return
@@ -733,7 +738,7 @@ func (p *PubSub) pushMsg(src peer.ID, msg *Message) {
 		msgPhase := "FLUFFED"  
 		msg1:=pb.Message{From:msg.Message.GetFrom(),Data:msg.GetData(),Seqno:msg.GetSeqno(),TopicIDs:msg.GetTopicIDs(),Signature:msg.GetSignature(),Key:msg.GetKey(),State:&msgPhase}
 		msg = &Message{&msg1}
-		p.fluff(msg.GetFrom(),msg)
+		p.fluff(msg.GetFrom(),msg.Message)
         }else{
 		p.publishMessage(src, msg.Message)
         }
