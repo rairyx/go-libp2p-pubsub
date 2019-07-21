@@ -7,7 +7,7 @@ import (
 	"math/rand"
 	"testing"
 	"time"
-
+//         "sync"
 	"github.com/libp2p/go-libp2p-core/host"
 )
 
@@ -26,9 +26,9 @@ func getGossipsubs(ctx context.Context, hs []host.Host, opts ...Option) []*PubSu
 func TestSparseGossipsub(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	hosts := getNetHosts(t, ctx, 20)
+	hosts := getNetHosts(t, ctx, 10)
 
-	psubs := getGossipsubs(ctx, hosts)
+		psubs := getGossipsubs(ctx, hosts, WithMessageSigning(false))
 
 	var msgs []*Subscription
 	for _, ps := range psubs {
@@ -44,7 +44,6 @@ func TestSparseGossipsub(t *testing.T) {
 
 	// wait for heartbeats to build mesh
 	time.Sleep(time.Second * 2)
-
 	for i := 0; i < 100; i++ {
 		msg := []byte(fmt.Sprintf("%d it's not a floooooood %d", i, i))
 
@@ -53,14 +52,16 @@ func TestSparseGossipsub(t *testing.T) {
 		psubs[owner].Publish("foobar", msg)
 
 		for _, sub := range msgs {
-			got, err := sub.Next(ctx)
+		        got, err := sub.Next(ctx)
 			if err != nil {
 				t.Fatal(sub.err)
 			}
+			//fmt.Println(string(got.Data))
 			if !bytes.Equal(msg, got.Data) {
 				t.Fatal("got wrong message!")
 			}
 		}
+
 	}
 }
 
@@ -807,7 +808,6 @@ func TestMixedGossipsub(t *testing.T) {
 	}
 
 	sparseConnect(t, hosts)
-
 	// wait for heartbeats to build mesh
 	time.Sleep(time.Second * 2)
 

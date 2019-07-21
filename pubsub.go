@@ -463,17 +463,21 @@ func (p *PubSub) handleRemoveSubscription(sub *Subscription) {
 	}
 }
 
-func (p *PubSub) fluff(from peer.ID, pmsg *pb.Message) {
-     id := msgID(pmsg)
+//Diffuse the message to all of its peers
+func (p *PubSub) fluff(from peer.ID, msg *Message) {
+     if msg.Message.GetState() == "STEM"{
+	     msgPhase := "FLUFF"
+	     msg.Message = &pb.Message{From:msg.Message.GetFrom(),Data:msg.GetData(),Seqno:msg.GetSeqno(),TopicIDs:msg.GetTopicIDs(),Signature:msg.GetSignature(),Key:msg.GetKey(),State:&msgPhase}
+     }
+     id := msgID(msg.Message)
      if p.seenMessage(id) {
 		return
      }
      p.markSeen(id)
 
-
-     out := rpcWithMessages(pmsg)
+     out := rpcWithMessages(msg.Message)
      for pid:= range p.peers{
-	if pid == from || pid == peer.ID(pmsg.GetFrom()) {
+	if  pid == peer.ID(msg.GetFrom()) {
 			continue
 	}
 	mch, ok := p.peers[pid]
@@ -483,46 +487,50 @@ func (p *PubSub) fluff(from peer.ID, pmsg *pb.Message) {
 
 		select {
 		case mch <- out:
+			log.Debugf("message %s fluffed to peer %s", msg.String(),pid)
 		default:
 			log.Infof("dropping message to peer %s: queue full", pid)
 			// Drop it. The peer is too slow.
 		}
        }
        //when stemmed mesage is about to fluff,the node itself should receive the message
-       p.notifySubs(pmsg)
+       p.notifySubs(msg.Message)
 }
 
-func (p *PubSub) relayStem(from peer.ID, msg *Message) {
-	log.Debugf("message item relay %s", msg.Message.String())
-//	id := msgID(msg.Message)
-//	if p.seenMessage(id) {
-//		return
-//	}
-//	p.markSeen(id)
-	out := rpcWithMessages(msg.Message)
-	i := rand.Intn(len(p.peers))
-	var pid peer.ID
-	for k := range p.peers{
-		if i == 0 {
-			pid=k
-			if pid==from || pid ==peer.ID(msg.Message.String()){
-				i++
-			}
-			break
-		}
-		i--
+func (p *PubSub) relayStem(from peer.ID, msg *Message) bool {
+	id := msgID(msg.Message)
+	if p.seenMessage(id) {
+		return false
 	}
-	mch, ok := p.peers[pid]
+	p.markSeen(id)
+	log.Debugf("message item relay %s", msg.Message.String())
+	out := rpcWithMessages(msg.Message)
+	var peers []peer.ID
+	for pid := range p.peers{
+			if pid == from || pid ==peer.ID(msg.GetFrom()){
+				//i++
+				continue 
+			} else{
+				peers = append(peers,pid) 
+			}
+	}
+        var stemToPeer peer.ID
+	if (len(peers) > 0){
+		stemToPeer = peers[rand.Intn(len(peers))]
+	}
+
+	mch, ok := p.peers[stemToPeer]
 	if !ok {
-		return
+		return false
 	}
 	select {
 		case mch <- out:
-			log.Infof("stem message relayed to peer %s", pid)
+			log.Infof("stem message relayed to peer %s", stemToPeer)
 		default:
-			log.Infof("dropping message to peer %s: queue full", pid)
+			log.Infof("dropping message to peer %s: queue full", stemToPeer)
 			// Drop it. The peer is too slow.
 	}
+	return true
 }
 
 // handleAddSubscription adds a Subscription for a particular topic. If it is
@@ -688,15 +696,18 @@ func (p *PubSub) handleIncomingRPC(rpc *RPC) {
                 log.Debugf("received messge: %s",msg.Message.String())
 		phase:= getPhase()
 		log.Debugf("dandelion phase: %d",phase)
-		if (msg.GetState() == "STEM" && phase ==stem ) {
-			p.relayStem(rpc.from,msg)
-		}else {
-			if (msg.GetState()  == "STEM"){
-				msgPhase:="FLUFF"
-				msg1:=pb.Message{From:msg.Message.GetFrom(),Data:msg.GetData(),Seqno:msg.GetSeqno(),TopicIDs:msg.GetTopicIDs(),Signature:msg.GetSignature(),Key:msg.GetKey(),State:&msgPhase}
-				msg= &Message{&msg1}
-
+		if (msg.GetState() == "STEM") {
+			if  (phase == stem ){
+				ok:= p.relayStem(rpc.from,msg)
+				if !ok {
+					log.Debugf("steming failed")
+					p.fluff(rpc.from, msg)
+				}
+			}else{
+				p.fluff(rpc.from,msg)
 			}
+	        //Already fluffed, State == "FlUFF"
+		}else {
 			p.pushMsg(rpc.from, msg)
 		}
 	}
@@ -706,7 +717,7 @@ func (p *PubSub) handleIncomingRPC(rpc *RPC) {
 
 // msgID returns a unique ID of the passed Message
 func msgID(pmsg *pb.Message) string {
-	return string(pmsg.GetFrom()) + string(pmsg.GetSeqno())
+	return string(pmsg.GetFrom()) + string(pmsg.GetSeqno()) + pmsg.GetState()
 }
 
 // pushMsg pushes a message performing validation as necessary
@@ -729,7 +740,10 @@ func (p *PubSub) pushMsg(src peer.ID, msg *Message) {
 //		return
 //	}
 
-
+	id := msgID(msg.Message)
+	if p.seenMessage(id) {
+				return
+	}
 	if !p.val.Push(src, msg) {
 		return
 	}
@@ -741,7 +755,7 @@ func (p *PubSub) pushMsg(src peer.ID, msg *Message) {
 		p.fluff(msg.GetFrom(),msg.Message)
         }else{
 		p.publishMessage(src, msg.Message)
-        }
+	}
 }
 
 // validate performs validation and only sends the message if all validators succeed
@@ -836,7 +850,6 @@ func (p *PubSub) validateSingleTopic(val *topicVal, src peer.ID, msg *Message) b
 	default:
 		log.Debugf("validation throttled for topic %s", val.topic)
 		return false
->>>>>>> Separate fluff phase from pub/sub
 	}
 }
 
@@ -909,7 +922,7 @@ func (p *PubSub) Publish(topic string, data []byte) error {
 	m := &pb.Message{
 		Data:     data,
 		TopicIDs: []string{topic},
-		//From:     []byte(p.host.ID()),
+		From:     []byte(p.host.ID()),
 		Seqno:    seqno,
 		State:    &state,
 	}

@@ -41,6 +41,7 @@ func (p *PubSub) handleNewStream(s network.Stream) {
 			} else {
 				// Just be nice. They probably won't read this
 				// but it doesn't hurt to send it.
+				log.Infof("erro here")
 				s.Close()
 			}
 			return
