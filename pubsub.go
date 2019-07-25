@@ -19,15 +19,12 @@ import (
 
 	logging "github.com/ipfs/go-log"
 	timecache "github.com/whyrusleeping/timecache"
+        sha256 "github.com/minio/sha256-simd"
 )
 
 
+const letterBytes = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
-const (
-	defaultValidateTimeout     = 150 * time.Millisecond
-	defaultValidateConcurrency = 100
-	defaultValidateThrottle    = 8192
-)
 
 type dandelionPhase int 
 
@@ -42,6 +39,9 @@ var (
 
 var log = logging.Logger("pubsub")
 
+
+
+
 // PubSub is the implementation of the pubsub system.
 type PubSub struct {
 	// atomic counter for seqnos
@@ -50,6 +50,9 @@ type PubSub struct {
 	//
 	// See: https://golang.org/pkg/sync/atomic/#pkg-note-BUG
 	counter uint64
+
+	//random string to obfuscate node ID in from field 
+	rID string
 
 	host host.Host
 
@@ -171,6 +174,7 @@ type RPC struct {
 
 type Option func(*PubSub) error
 
+
 // NewPubSub returns a new PubSub management object.
 func NewPubSub(ctx context.Context, h host.Host, rt PubSubRouter, opts ...Option) (*PubSub, error) {
 	ps := &PubSub{
@@ -202,6 +206,7 @@ func NewPubSub(ctx context.Context, h host.Host, rt PubSubRouter, opts ...Option
 		blacklistPeer: make(chan peer.ID),
 		seenMessages:  timecache.NewTimeCache(TimeCacheDuration),
 		counter:       uint64(time.Now().UnixNano()),
+		rID:           RandStringBytes(10),
 	}
 
 	for _, opt := range opts {
@@ -461,7 +466,17 @@ func (p *PubSub) handleRemoveSubscription(sub *Subscription) {
 		p.announce(sub.topic, false)
 		p.rt.Leave(sub.topic)
 	}
+
 }
+
+
+func (p *PubSub) originalSender(msg *Message) bool{
+	from := sha256.Sum256([]byte(string(p.host.ID()) + p.rID))
+	return msg.GetFrom() == peer.ID(from[:])
+
+
+}
+
 
 //Diffuse the message to all of its peers
 func (p *PubSub) fluff(from peer.ID, msg *Message) {
@@ -470,7 +485,7 @@ func (p *PubSub) fluff(from peer.ID, msg *Message) {
 	     msg.Message = &pb.Message{From:msg.Message.GetFrom(),Data:msg.GetData(),Seqno:msg.GetSeqno(),TopicIDs:msg.GetTopicIDs(),Signature:msg.GetSignature(),Key:msg.GetKey(),State:&msgPhase}
      }
      id := msgID(msg.Message)
-     if p.seenMessage(id) {
+     if p.seenMessage(id)|| p.originalSender(msg) {
 		return
      }
      p.markSeen(id)
@@ -508,7 +523,6 @@ func (p *PubSub) relayStem(from peer.ID, msg *Message) bool {
 	var peers []peer.ID
 	for pid := range p.peers{
 			if pid == from || pid ==peer.ID(msg.GetFrom()){
-				//i++
 				continue 
 			} else{
 				peers = append(peers,pid) 
@@ -693,7 +707,7 @@ func (p *PubSub) handleIncomingRPC(rpc *RPC) {
 			continue
 		}
 		msg := &Message{pmsg}
-                log.Debugf("received messge: %s",msg.Message.String())
+                //log.Debugf("received messge: %s",msg.Message.String())
 		phase:= getPhase()
 		log.Debugf("dandelion phase: %d",phase)
 		if (msg.GetState() == "STEM") {
@@ -741,117 +755,20 @@ func (p *PubSub) pushMsg(src peer.ID, msg *Message) {
 //	}
 
 	id := msgID(msg.Message)
-	if p.seenMessage(id) {
+	if p.seenMessage(id) || (src !=p.host.ID() && p.originalSender(msg)) {
 				return
 	}
 	if !p.val.Push(src, msg) {
 		return
 	}
 
-	if msg.GetState() == "FLUFF" {
-		msgPhase := "FLUFFED"  
-		msg1:=pb.Message{From:msg.Message.GetFrom(),Data:msg.GetData(),Seqno:msg.GetSeqno(),TopicIDs:msg.GetTopicIDs(),Signature:msg.GetSignature(),Key:msg.GetKey(),State:&msgPhase}
-		msg = &Message{&msg1}
-		p.fluff(msg.GetFrom(),msg.Message)
-        }else{
+	if p.markSeen(id) {
 		p.publishMessage(src, msg.Message)
 	}
 }
 
-// validate performs validation and only sends the message if all validators succeed
-func (p *PubSub) validate(vals []*topicVal, src peer.ID, msg *Message) {
-	if msg.Signature != nil {
-		if !p.validateSignature(msg) {
-			log.Warningf("message signature validation failed; dropping message from %s", src)
-			return
-		}
-	}
 
-	if len(vals) > 0 {
-		if !p.validateTopic(vals, src, msg) {
-			log.Warningf("message validation failed; dropping message from %s", src)
-			return
-		}
-	}
 
-	// all validators were successful, send the message
-	p.sendMsg <- &sendReq{
-		from: src,
-		msg:  msg,
-	}
-}
-
-func (p *PubSub) validateSignature(msg *Message) bool {
-	err := verifyMessageSignature(msg.Message)
-	if err != nil {
-		log.Debugf("signature verification error: %s", err.Error())
-		return false
-	}
-
-	return true
-}
-
-func (p *PubSub) validateTopic(vals []*topicVal, src peer.ID, msg *Message) bool {
-	if len(vals) == 1 {
-		return p.validateSingleTopic(vals[0], src, msg)
-	}
-
-	ctx, cancel := context.WithCancel(p.ctx)
-	defer cancel()
-
-	rch := make(chan bool, len(vals))
-	rcount := 0
-	throttle := false
-
-loop:
-	for _, val := range vals {
-		rcount++
-
-		select {
-		case val.validateThrottle <- struct{}{}:
-			go func(val *topicVal) {
-				rch <- val.validateMsg(ctx, src, msg)
-				<-val.validateThrottle
-			}(val)
-
-		default:
-			log.Debugf("validation throttled for topic %s", val.topic)
-			throttle = true
-			break loop
-		}
-	}
-
-	if throttle {
-		return false
-	}
-
-	for i := 0; i < rcount; i++ {
-		valid := <-rch
-		if !valid {
-			return false
-		}
-	}
-
-	return true
-}
-
-// fast path for single topic validation that avoids the extra goroutine
-func (p *PubSub) validateSingleTopic(val *topicVal, src peer.ID, msg *Message) bool {
-	select {
-	case val.validateThrottle <- struct{}{}:
-		ctx, cancel := context.WithCancel(p.ctx)
-		defer cancel()
-
-		res := val.validateMsg(ctx, src, msg)
-		<-val.validateThrottle
-
-		return res
-
-	default:
-		log.Debugf("validation throttled for topic %s", val.topic)
-		return false
-	}
-}
 
 func (p *PubSub) publishMessage(from peer.ID, pmsg *pb.Message) {
 	p.notifySubs(pmsg)
@@ -915,14 +832,27 @@ func (p *PubSub) GetTopics() []string {
 	return <-out
 }
 
+
+
+func RandStringBytes(n int) string {
+	    rand.Seed(time.Now().UnixNano())
+	    b := make([]byte, n)
+	    for i := range b {
+		b[i] = letterBytes[rand.Intn(len(letterBytes))]
+	    }
+	    return string(b)
+}
+
 // Publish publishes data to the given topic.
 func (p *PubSub) Publish(topic string, data []byte) error {
 	seqno := p.nextSeqno()
 	state :="STEM"
+	from := sha256.Sum256([]byte(string(p.host.ID()) + p.rID))
 	m := &pb.Message{
 		Data:     data,
 		TopicIDs: []string{topic},
-		From:     []byte(p.host.ID()),
+		From:     from[:],
+//		From:     []byte(p.host.ID()),
 		Seqno:    seqno,
 		State:    &state,
 	}
