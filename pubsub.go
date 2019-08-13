@@ -24,7 +24,7 @@ import (
 
 
 const letterBytes = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
-
+const DandelionEpochInterval = 500 * time.Second
 
 type dandelionPhase int 
 
@@ -54,6 +54,8 @@ type PubSub struct {
 	//random string to obfuscate node ID in from field 
 	rID string
 
+        stemPeer peer.ID
+	
 	host host.Host
 
 	rt PubSubRouter
@@ -114,6 +116,8 @@ type PubSub struct {
 	blacklistPeer chan peer.ID
 
 	peers map[peer.ID]chan *RPC
+	
+	relayPeers map[peer.ID]chan *RPC
 
 	seenMessagesMx sync.Mutex
 	seenMessages   *timecache.TimeCache
@@ -207,6 +211,7 @@ func NewPubSub(ctx context.Context, h host.Host, rt PubSubRouter, opts ...Option
 		seenMessages:  timecache.NewTimeCache(TimeCacheDuration),
 		counter:       uint64(time.Now().UnixNano()),
 		rID:           RandStringBytes(10),
+		phase:         stem,
 	}
 
 	for _, opt := range opts {
@@ -290,7 +295,6 @@ func WithBlacklist(b Blacklist) Option {
 
 func getPhase() dandelionPhase {
 	phase := stem
-	rand.Seed(time.Now().UnixNano())
 	switch rand.Intn(2) {
 		case 0:
 			phase = stem
@@ -299,8 +303,32 @@ func getPhase() dandelionPhase {
 	}
         return phase
 }
+
+
+func (p *PubSub) NewEpoch() {
+	rand.Seed(time.Now().UnixNano())
+	r:= rand.Intn(100)
+	switch {
+		case r <= 10:
+			p.phase = fluff
+		default:
+			p.phase = stem
+	}
+	log.Debugf("dandelion phase %d", p.phase)
+        //Pick a peer to stem for line diagram
+	var peers []peer.ID
+	for pid := range p.peers{
+				peers = append(peers,pid)
+	}
+	if (len(peers) > 0){
+		p.stemPeer = peers[rand.Intn(len(peers))]
+	}
+
+}
+
 // processLoop handles all inputs arriving on the channels
 func (p *PubSub) processLoop(ctx context.Context) {
+	ticker := time.NewTicker(DandelionEpochInterval)
 	defer func() {
 		// Clean up go routines.
 		for _, ch := range p.peers {
@@ -308,10 +336,14 @@ func (p *PubSub) processLoop(ctx context.Context) {
 		}
 		p.peers = nil
 		p.topics = nil
+		ticker.Stop()
 	}()
 
 	for {
 		select {
+		case <- ticker.C:
+			log.Warning("new Epoch")
+			p.NewEpoch()
 		case pid := <-p.newPeers:
 			if _, ok := p.peers[pid]; ok {
 				log.Warning("already have connection to peer: ", pid)
@@ -521,27 +553,29 @@ func (p *PubSub) relayStem(from peer.ID, msg *Message) bool {
 	log.Debugf("message item relay %s", msg.Message.String())
 	out := rpcWithMessages(msg.Message)
 	var peers []peer.ID
-	for pid := range p.peers{
+	//update the stem peer if it doesn't work
+	if p.stemPeer == from {
+		for pid := range p.peers{
 			if pid == from || pid ==peer.ID(msg.GetFrom()){
 				continue 
 			} else{
 				peers = append(peers,pid) 
 			}
-	}
-        var stemToPeer peer.ID
-	if (len(peers) > 0){
-		stemToPeer = peers[rand.Intn(len(peers))]
+		}
+		if (len(peers) > 0){
+			p.stemPeer = peers[rand.Intn(len(peers))]
+		}
 	}
 
-	mch, ok := p.peers[stemToPeer]
+	mch, ok := p.peers[p.stemPeer]
 	if !ok {
 		return false
 	}
 	select {
 		case mch <- out:
-			log.Infof("stem message relayed to peer %s", stemToPeer)
+			log.Infof("stem message relayed to peer %s", p.stemPeer)
 		default:
-			log.Infof("dropping message to peer %s: queue full", stemToPeer)
+			log.Infof("dropping message to peer %s: queue full", p.stemPeer)
 			// Drop it. The peer is too slow.
 	}
 	return true
@@ -708,10 +742,10 @@ func (p *PubSub) handleIncomingRPC(rpc *RPC) {
 		}
 		msg := &Message{pmsg}
                 //log.Debugf("received messge: %s",msg.Message.String())
-		phase:= getPhase()
-		log.Debugf("dandelion phase: %d",phase)
+		//phase:= getPhase()
+		log.Debugf("Dandelion phase: %d",p.phase)
 		if (msg.GetState() == "STEM") {
-			if  (phase == stem ){
+			if  (p.phase == stem ){
 				ok:= p.relayStem(rpc.from,msg)
 				if !ok {
 					log.Debugf("steming failed")
