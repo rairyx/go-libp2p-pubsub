@@ -25,6 +25,8 @@ import (
 
 const letterBytes = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
 const DandelionEpochInterval = 500 * time.Second
+const DandelionStemCheckInterval = 500 * time.Millisecond
+const DandelionStemExpireSpan = 60 * time.Second 
 
 type dandelionPhase int 
 
@@ -41,7 +43,6 @@ var log = logging.Logger("pubsub")
 
 
 
-
 // PubSub is the implementation of the pubsub system.
 type PubSub struct {
 	// atomic counter for seqnos
@@ -53,8 +54,11 @@ type PubSub struct {
 
 	//random string to obfuscate node ID in from field 
 	rID string
-
+        //peer to stem  
         stemPeer peer.ID
+
+        //stem message cache
+	stemMsgs map[string]StemMessage
 	
 	host host.Host
 
@@ -176,6 +180,11 @@ type RPC struct {
 	from peer.ID
 }
 
+type StemMessage struct {
+	msg  *Message 
+	t    time.Time
+}
+
 type Option func(*PubSub) error
 
 
@@ -212,6 +221,7 @@ func NewPubSub(ctx context.Context, h host.Host, rt PubSubRouter, opts ...Option
 		counter:       uint64(time.Now().UnixNano()),
 		rID:           RandStringBytes(10),
 		phase:         stem,
+		stemMsgs:      make(map[string]StemMessage),
 	}
 
 	for _, opt := range opts {
@@ -306,6 +316,8 @@ func getPhase() dandelionPhase {
 
 
 func (p *PubSub) NewEpoch() {
+	
+	log.Debugf("new Epoch")
 	rand.Seed(time.Now().UnixNano())
 	r:= rand.Intn(100)
 	switch {
@@ -329,6 +341,8 @@ func (p *PubSub) NewEpoch() {
 // processLoop handles all inputs arriving on the channels
 func (p *PubSub) processLoop(ctx context.Context) {
 	ticker := time.NewTicker(DandelionEpochInterval)
+	tickerStem := time.NewTicker(DandelionStemCheckInterval)
+	p.NewEpoch()
 	defer func() {
 		// Clean up go routines.
 		for _, ch := range p.peers {
@@ -337,6 +351,7 @@ func (p *PubSub) processLoop(ctx context.Context) {
 		p.peers = nil
 		p.topics = nil
 		ticker.Stop()
+		tickerStem.Stop()
 	}()
 
 	for {
@@ -344,6 +359,15 @@ func (p *PubSub) processLoop(ctx context.Context) {
 		case <- ticker.C:
 			log.Warning("new Epoch")
 			p.NewEpoch()
+		case <- tickerStem.C:
+			for msgID, msg:= range p.stemMsgs {
+				rt := rand.Intn(30)
+				if time.Since(msg.t) > DandelionStemExpireSpan + time.Duration(rt) * time.Second {
+					p.fluff(msg.msg.GetFrom(), msg.msg)
+					delete(p.stemMsgs, msgID)
+				}
+			}
+
 		case pid := <-p.newPeers:
 			if _, ok := p.peers[pid]; ok {
 				log.Warning("already have connection to peer: ", pid)
@@ -549,12 +573,20 @@ func (p *PubSub) relayStem(from peer.ID, msg *Message) bool {
 	if p.seenMessage(id) {
 		return false
 	}
-	p.markSeen(id)
+	if p.markSeen(id){
+		stemId:=stemMsgID(msg.Message) 
+		_, ok:= p.stemMsgs[stemId]
+		if ok {
+		   panic("putting the same entry twice not supported")
+		}
+		p.stemMsgs[stemId]= StemMessage{msg:msg, t:time.Now()}
+	}
+
 	log.Debugf("message item relay %s", msg.Message.String())
 	out := rpcWithMessages(msg.Message)
 	var peers []peer.ID
 	//update the stem peer if it doesn't work
-	if p.stemPeer == from {
+	if p.stemPeer =="" || p.stemPeer == from {
 		for pid := range p.peers{
 			if pid == from || pid ==peer.ID(msg.GetFrom()){
 				continue 
@@ -566,6 +598,7 @@ func (p *PubSub) relayStem(from peer.ID, msg *Message) bool {
 			p.stemPeer = peers[rand.Intn(len(peers))]
 		}
 	}
+	log.Debugf("stem peer %s", p.stemPeer)
 
 	mch, ok := p.peers[p.stemPeer]
 	if !ok {
@@ -768,6 +801,9 @@ func msgID(pmsg *pb.Message) string {
 	return string(pmsg.GetFrom()) + string(pmsg.GetSeqno()) + pmsg.GetState()
 }
 
+func stemMsgID(pmsg *pb.Message) string {
+	return string(pmsg.GetFrom()) + string(pmsg.GetSeqno())
+}
 // pushMsg pushes a message performing validation as necessary
 func (p *PubSub) pushMsg(src peer.ID, msg *Message) {
 	// reject messages from blacklisted peers
@@ -787,7 +823,11 @@ func (p *PubSub) pushMsg(src peer.ID, msg *Message) {
 //		log.Debugf("dropping unsigned message from %s", src)
 //		return
 //	}
-
+	stemId := stemMsgID(msg.Message)
+	_, ok:= p.stemMsgs[stemId]
+	if ok {
+		delete(p.stemMsgs, stemId)
+	}
 	id := msgID(msg.Message)
 	if p.seenMessage(id) || (src !=p.host.ID() && p.originalSender(msg)) {
 				return
