@@ -55,7 +55,7 @@ func connect(t *testing.T, a, b host.Host) {
 }
 
 func sparseConnect(t *testing.T, hosts []host.Host) {
-	connectSome(t, hosts, 3)
+	connectSome(t, hosts, 4)
 }
 
 func denseConnect(t *testing.T, hosts []host.Host) {

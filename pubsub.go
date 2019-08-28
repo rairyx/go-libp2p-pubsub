@@ -24,7 +24,7 @@ import (
 
 
 const letterBytes = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
-const DandelionEpochInterval = 500 * time.Second
+const DandelionEpochInterval = 50 * time.Second
 const DandelionStemCheckInterval = 500 * time.Millisecond
 const DandelionStemExpireSpan = 60 * time.Second 
 
@@ -59,7 +59,11 @@ type PubSub struct {
 
         //stem message cache
 	stemMsgs map[string]StemMessage
-	
+        
+	//incoming messages to outgoing message mapping
+        stemRelayMaps map[peer.ID][]peer.ID
+	//line graph for stem phase
+	lineGraph bool
 	host host.Host
 
 	rt PubSubRouter
@@ -221,7 +225,9 @@ func NewPubSub(ctx context.Context, h host.Host, rt PubSubRouter, opts ...Option
 		counter:       uint64(time.Now().UnixNano()),
 		rID:           RandStringBytes(10),
 		phase:         stem,
+		stemRelayMaps:  make(map[peer.ID][]peer.ID),
 		stemMsgs:      make(map[string]StemMessage),
+		lineGraph:     false,
 	}
 
 	for _, opt := range opts {
@@ -314,9 +320,14 @@ func getPhase() dandelionPhase {
         return phase
 }
 
+func remove(s []peer.ID, i int) []peer.ID {
+	b:= make([]peer.ID, len(s))
+	copy(b, s)
+	b[i] = b[len(s)-1]
+	return b[:len(s)-1]
+}
 
 func (p *PubSub) NewEpoch() {
-	
 	log.Debugf("new Epoch")
 	rand.Seed(time.Now().UnixNano())
 	r:= rand.Intn(100)
@@ -332,8 +343,26 @@ func (p *PubSub) NewEpoch() {
 	for pid := range p.peers{
 				peers = append(peers,pid)
 	}
-	if (len(peers) > 0){
-		p.stemPeer = peers[rand.Intn(len(peers))]
+	if p.lineGraph {
+		if (len(peers) > 0){
+			p.stemPeer = peers[rand.Intn(len(peers))]
+		}
+	}else {
+		for i, pid := range peers {
+			p.stemRelayMaps[pid] = nil
+			stem_peers := remove(peers, i)
+
+			if (len(stem_peers) > 0){
+				k:= rand.Intn(len(stem_peers))
+				outgoingPId := stem_peers[k]
+				p.stemRelayMaps[pid]=append(p.stemRelayMaps[pid],outgoingPId)
+				stem_peers := remove(stem_peers,k)
+				if (len(stem_peers) > 0){
+					outgoingPId2 := stem_peers[rand.Intn(len(stem_peers))]
+					p.stemRelayMaps[pid]= append(p.stemRelayMaps[pid], outgoingPId2)
+				}
+			}
+		}
 	}
 
 }
@@ -342,7 +371,7 @@ func (p *PubSub) NewEpoch() {
 func (p *PubSub) processLoop(ctx context.Context) {
 	ticker := time.NewTicker(DandelionEpochInterval)
 	tickerStem := time.NewTicker(DandelionStemCheckInterval)
-	p.NewEpoch()
+//	p.NewEpoch()
 	defer func() {
 		// Clean up go routines.
 		for _, ch := range p.peers {
@@ -573,6 +602,8 @@ func (p *PubSub) relayStem(from peer.ID, msg *Message) bool {
 	if p.seenMessage(id) {
 		return false
 	}
+	var mch chan *RPC
+	var ok = false  
 	if p.markSeen(id){
 		stemId:=stemMsgID(msg.Message) 
 		_, ok:= p.stemMsgs[stemId]
@@ -584,23 +615,30 @@ func (p *PubSub) relayStem(from peer.ID, msg *Message) bool {
 
 	log.Debugf("message item relay %s", msg.Message.String())
 	out := rpcWithMessages(msg.Message)
-	var peers []peer.ID
-	//update the stem peer if it doesn't work
-	if p.stemPeer =="" || p.stemPeer == from {
-		for pid := range p.peers{
-			if pid == from || pid ==peer.ID(msg.GetFrom()){
-				continue 
-			} else{
-				peers = append(peers,pid) 
+	if p.lineGraph {
+		var peers []peer.ID
+		//update the stem peer if it doesn't work
+		if p.stemPeer =="" || p.stemPeer == from {
+			for pid := range p.peers{
+				if pid == from || pid ==peer.ID(msg.GetFrom()){
+					continue
+				}else{
+					peers = append(peers,pid)
+				}
+			}
+			if (len(peers) > 0){
+				p.stemPeer = peers[rand.Intn(len(peers))]
 			}
 		}
-		if (len(peers) > 0){
-			p.stemPeer = peers[rand.Intn(len(peers))]
+		mch, ok = p.peers[p.stemPeer]
+	}else{
+	        if len(p.stemRelayMaps[from]) > 0 {
+			stemPeer := p.stemRelayMaps[from][0]
+			log.Debugf("from: %s to: %s",from, p.stemRelayMaps[from][0])
+			mch, ok = p.peers[stemPeer]
 		}
-	}
-	log.Debugf("stem peer %s", p.stemPeer)
 
-	mch, ok := p.peers[p.stemPeer]
+	}
 	if !ok {
 		return false
 	}
