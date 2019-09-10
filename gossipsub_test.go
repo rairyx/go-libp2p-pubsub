@@ -26,9 +26,9 @@ func getGossipsubs(ctx context.Context, hs []host.Host, opts ...Option) []*PubSu
 func TestSparseGossipsub(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	hosts := getNetHosts(t, ctx, 10)
+	hosts := getNetHosts(t, ctx, 20)
 
-		psubs := getGossipsubs(ctx, hosts, WithMessageSigning(false))
+	psubs := getGossipsubs(ctx, hosts, WithMessageSigning(false))
 
 	var msgs []*Subscription
 	for _, ps := range psubs {
@@ -70,7 +70,7 @@ func TestDenseGossipsub(t *testing.T) {
 	defer cancel()
 	hosts := getNetHosts(t, ctx, 20)
 
-	psubs := getGossipsubs(ctx, hosts)
+	psubs := getGossipsubs(ctx, hosts, WithMessageSigning(false))
 
 	var msgs []*Subscription
 	for _, ps := range psubs {
@@ -99,6 +99,7 @@ func TestDenseGossipsub(t *testing.T) {
 			if err != nil {
 				t.Fatal(sub.err)
 			}
+			//fmt.Println(string(got.Data))
 			if !bytes.Equal(msg, got.Data) {
 				t.Fatal("got wrong message!")
 			}
@@ -111,7 +112,7 @@ func TestGossipsubFanout(t *testing.T) {
 	defer cancel()
 	hosts := getNetHosts(t, ctx, 20)
 
-	psubs := getGossipsubs(ctx, hosts)
+	psubs := getGossipsubs(ctx, hosts, WithMessageSigning(false))
 
 	var msgs []*Subscription
 	for _, ps := range psubs[1:] {
@@ -140,6 +141,7 @@ func TestGossipsubFanout(t *testing.T) {
 			if err != nil {
 				t.Fatal(sub.err)
 			}
+//			fmt.Println(string(got.Data))
 			if !bytes.Equal(msg, got.Data) {
 				t.Fatal("got wrong message!")
 			}
@@ -154,7 +156,7 @@ func TestGossipsubFanout(t *testing.T) {
 	msgs = append(msgs, subch)
 
 	// wait for a heartbeat
-	time.Sleep(time.Second * 1)
+	time.Sleep(time.Second * 2)
 
 	for i := 0; i < 100; i++ {
 		msg := []byte(fmt.Sprintf("%d it's not a floooooood %d", i, i))
@@ -168,11 +170,13 @@ func TestGossipsubFanout(t *testing.T) {
 			if err != nil {
 				t.Fatal(sub.err)
 			}
+	//		fmt.Println(string(got.Data))
 			if !bytes.Equal(msg, got.Data) {
 				t.Fatal("got wrong message!")
 			}
 		}
 	}
+
 }
 
 func TestGossipsubFanoutMaintenance(t *testing.T) {
@@ -180,7 +184,7 @@ func TestGossipsubFanoutMaintenance(t *testing.T) {
 	defer cancel()
 	hosts := getNetHosts(t, ctx, 20)
 
-	psubs := getGossipsubs(ctx, hosts)
+	psubs := getGossipsubs(ctx, hosts,WithMessageSigning(false))
 
 	var msgs []*Subscription
 	for _, ps := range psubs[1:] {
@@ -263,7 +267,7 @@ func TestGossipsubFanoutExpiry(t *testing.T) {
 	defer cancel()
 	hosts := getNetHosts(t, ctx, 10)
 
-	psubs := getGossipsubs(ctx, hosts)
+	psubs := getGossipsubs(ctx, hosts,WithMessageSigning(false))
 
 	var msgs []*Subscription
 	for _, ps := range psubs[1:] {
@@ -322,7 +326,7 @@ func TestGossipsubGossip(t *testing.T) {
 	defer cancel()
 	hosts := getNetHosts(t, ctx, 20)
 
-	psubs := getGossipsubs(ctx, hosts)
+	psubs := getGossipsubs(ctx, hosts, WithMessageSigning(false))
 
 	var msgs []*Subscription
 	for _, ps := range psubs {
@@ -361,6 +365,7 @@ func TestGossipsubGossip(t *testing.T) {
 	}
 
 	// and wait for some gossip flushing
+	
 	time.Sleep(time.Second * 2)
 }
 
@@ -369,7 +374,7 @@ func TestGossipsubGossipPiggyback(t *testing.T) {
 	defer cancel()
 	hosts := getNetHosts(t, ctx, 20)
 
-	psubs := getGossipsubs(ctx, hosts)
+	psubs := getGossipsubs(ctx, hosts, WithMessageSigning(false))
 
 	var msgs []*Subscription
 	for _, ps := range psubs {
@@ -437,7 +442,7 @@ func TestGossipsubGossipPropagation(t *testing.T) {
 	defer cancel()
 
 	hosts := getNetHosts(t, ctx, 20)
-	psubs := getGossipsubs(ctx, hosts)
+	psubs := getGossipsubs(ctx, hosts, WithMessageSigning(false))
 
 	hosts1 := hosts[:GossipSubD+1]
 	hosts2 := append(hosts[GossipSubD+1:], hosts[0])
@@ -518,7 +523,7 @@ func TestGossipsubPrune(t *testing.T) {
 	defer cancel()
 	hosts := getNetHosts(t, ctx, 20)
 
-	psubs := getGossipsubs(ctx, hosts)
+	psubs := getGossipsubs(ctx, hosts,WithMessageSigning(false))
 
 	var msgs []*Subscription
 	for _, ps := range psubs {
@@ -567,7 +572,7 @@ func TestGossipsubGraft(t *testing.T) {
 	defer cancel()
 	hosts := getNetHosts(t, ctx, 20)
 
-	psubs := getGossipsubs(ctx, hosts)
+	psubs := getGossipsubs(ctx, hosts, WithMessageSigning(false))
 
 	sparseConnect(t, hosts)
 
@@ -612,7 +617,7 @@ func TestGossipsubRemovePeer(t *testing.T) {
 	defer cancel()
 	hosts := getNetHosts(t, ctx, 20)
 
-	psubs := getGossipsubs(ctx, hosts)
+	psubs := getGossipsubs(ctx, hosts, WithMessageSigning(false))
 
 	var msgs []*Subscription
 	for _, ps := range psubs {
@@ -661,7 +666,7 @@ func TestGossipsubGraftPruneRetry(t *testing.T) {
 	defer cancel()
 
 	hosts := getNetHosts(t, ctx, 10)
-	psubs := getGossipsubs(ctx, hosts)
+	psubs := getGossipsubs(ctx, hosts, WithMessageSigning(false))
 	denseConnect(t, hosts)
 
 	var topics []string
@@ -711,7 +716,7 @@ func TestGossipsubControlPiggyback(t *testing.T) {
 	defer cancel()
 
 	hosts := getNetHosts(t, ctx, 10)
-	psubs := getGossipsubs(ctx, hosts)
+	psubs := getGossipsubs(ctx, hosts,WithMessageSigning(false))
 	denseConnect(t, hosts)
 
 	for _, ps := range psubs {
@@ -793,8 +798,8 @@ func TestMixedGossipsub(t *testing.T) {
 	defer cancel()
 	hosts := getNetHosts(t, ctx, 30)
 
-	gsubs := getGossipsubs(ctx, hosts[:20])
-	fsubs := getPubsubs(ctx, hosts[20:])
+	gsubs := getGossipsubs(ctx, hosts[:20],WithMessageSigning(false))
+	fsubs := getPubsubs(ctx, hosts[20:],WithMessageSigning(false))
 	psubs := append(gsubs, fsubs...)
 
 	var msgs []*Subscription
@@ -836,7 +841,7 @@ func TestGossipsubMultihops(t *testing.T) {
 
 	hosts := getNetHosts(t, ctx, 6)
 
-	psubs := getGossipsubs(ctx, hosts)
+	psubs := getGossipsubs(ctx, hosts,WithMessageSigning(false))
 
 	connect(t, hosts[0], hosts[1])
 	connect(t, hosts[1], hosts[2])
@@ -878,7 +883,7 @@ func TestGossipsubTreeTopology(t *testing.T) {
 	defer cancel()
 
 	hosts := getNetHosts(t, ctx, 10)
-	psubs := getGossipsubs(ctx, hosts)
+	psubs := getGossipsubs(ctx, hosts, WithMessageSigning(false))
 
 	connect(t, hosts[0], hosts[1])
 	connect(t, hosts[1], hosts[2])
@@ -918,4 +923,94 @@ func TestGossipsubTreeTopology(t *testing.T) {
 	assertPeerLists(t, hosts, psubs[2], 1, 3)
 
 	checkMessageRouting(t, "fizzbuzz", []*PubSub{psubs[9], psubs[3]}, chs)
+}
+
+func TestDandelionStemPhase(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	hosts := getNetHosts(t, ctx, 20)
+	psubs := getGossipsubs(ctx, hosts,WithMessageSigning(false))
+	denseConnect(t, hosts)
+
+	var msgs []*Subscription
+	for _, ps := range psubs {
+		subch, err := ps.Subscribe("foobar")
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		msgs = append(msgs, subch)
+	}
+
+	time.Sleep(time.Second * 10)
+
+
+//	msg := []byte(fmt.Sprintf("%d it's not a floooooood %d", i, i))
+	owner := rand.Intn(len(psubs))
+	
+	for psubs[owner].phase == fluff {
+		owner = rand.Intn(len(psubs))
+	}
+
+	stemPeer:= psubs[owner].stemPeer
+	inext:= owner
+	if stemPeer == ""{ 
+		t.Fatal("stem peer is empty!")
+	}
+	//	var nextHost host.Host
+	var stemPeerSubs[]*Subscription
+	var stemSubs[]*PubSub
+	stemPeers:=make(map[string]struct{})
+//	fmt.Printf("phase %d\n",psubs[inext].phase)
+	for; psubs[inext].phase == stem; {
+		stemPeerSubs =append(stemPeerSubs, msgs[inext])
+		stemSubs = append(stemSubs, psubs[inext])
+		stemPeers[string(psubs[inext].host.ID())] = struct{}{} 
+		for i, h := range hosts {
+			if h.ID() == psubs[inext].stemPeer{
+				inext = i
+				fmt.Printf("inext= %d\n",i)
+				break
+			}
+		}
+//		fmt.Printf("stem peer %s\n", stemPeer)
+		stemPeer = psubs[inext].stemPeer
+		_, ok := stemPeers[string(stemPeer)]
+		if ok{
+			break
+		}
+	}
+//close down last stem peer
+	stemSubs[len(stemSubs)-1].host.Close()
+	
+//	time.Sleep(time.Second * 1)
+//	fmt.Println(len(stemPeerSubs))
+
+	msg := []byte("i like dogs")
+	psubs[owner].Publish("foobar", msg)
+//	stemSubs[len(stemSubs)-1].host.Close()
+//	hosts[inext].Close()
+//	time.Sleep(time.Second * 5)
+//check for stem message cache
+	for _, sub := range stemSubs {
+		fmt.Printf("stem sub peer %s\n",sub.host.ID())
+		for _, smsg := range sub.stemMsgs{
+			fmt.Printf("stem messge=%s\n", string(smsg.msg.Data))
+		}
+	
+	}
+	for i, sub := range stemPeerSubs {
+			got, err := sub.Next(ctx)
+			if err != nil {
+				t.Fatal(sub.err)
+			}
+			fmt.Printf("peer %s\n",stemSubs[i].host.ID()) 
+			fmt.Println(string(got.Data))
+			fmt.Printf("state= %s\n", *got.State)
+			//if !bytes.Equal(msg, got.Data) || *got.State!= "STEM" {
+			if !bytes.Equal(msg, got.Data) {
+				t.Fatal("got wrong message!")
+			}
+	}
 }

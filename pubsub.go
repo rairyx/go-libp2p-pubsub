@@ -24,7 +24,7 @@ import (
 
 
 const letterBytes = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
-const DandelionEpochInterval = 50 * time.Second
+const DandelionEpochInterval = 5 * time.Second
 const DandelionStemCheckInterval = 500 * time.Millisecond
 const DandelionStemExpireSpan = 60 * time.Second 
 
@@ -58,7 +58,7 @@ type PubSub struct {
         stemPeer peer.ID
 
         //stem message cache
-	stemMsgs map[string]StemMessage
+	stemMsgs map[string]*StemMessage
         
 	//incoming messages to outgoing message mapping
         stemRelayMaps map[peer.ID][]peer.ID
@@ -125,8 +125,6 @@ type PubSub struct {
 
 	peers map[peer.ID]chan *RPC
 	
-	relayPeers map[peer.ID]chan *RPC
-
 	seenMessagesMx sync.Mutex
 	seenMessages   *timecache.TimeCache
 
@@ -226,8 +224,8 @@ func NewPubSub(ctx context.Context, h host.Host, rt PubSubRouter, opts ...Option
 		rID:           RandStringBytes(10),
 		phase:         stem,
 		stemRelayMaps:  make(map[peer.ID][]peer.ID),
-		stemMsgs:      make(map[string]StemMessage),
-		lineGraph:     false,
+		stemMsgs:      make(map[string]*StemMessage),
+		lineGraph:     true,
 	}
 
 	for _, opt := range opts {
@@ -338,7 +336,7 @@ func (p *PubSub) NewEpoch() {
 			p.phase = stem
 	}
 	log.Debugf("dandelion phase %d", p.phase)
-        //Pick a peer to stem for line diagram
+        //Pick a peer to stem for line graph
 	var peers []peer.ID
 	for pid := range p.peers{
 				peers = append(peers,pid)
@@ -347,6 +345,7 @@ func (p *PubSub) NewEpoch() {
 		if (len(peers) > 0){
 			p.stemPeer = peers[rand.Intn(len(peers))]
 		}
+	//Approximate 4-regular graph 
 	}else {
 		for i, pid := range peers {
 			p.stemRelayMaps[pid] = nil
@@ -371,7 +370,7 @@ func (p *PubSub) NewEpoch() {
 func (p *PubSub) processLoop(ctx context.Context) {
 	ticker := time.NewTicker(DandelionEpochInterval)
 	tickerStem := time.NewTicker(DandelionStemCheckInterval)
-//	p.NewEpoch()
+	p.NewEpoch()
 	defer func() {
 		// Clean up go routines.
 		for _, ch := range p.peers {
@@ -603,22 +602,24 @@ func (p *PubSub) relayStem(from peer.ID, msg *Message) bool {
 		return false
 	}
 	var mch chan *RPC
-	var ok = false  
+	var ok = true  
 	if p.markSeen(id){
 		stemId:=stemMsgID(msg.Message) 
+		log.Debugf("peer %s stem message%s", p.host.ID(),msg.Message) 
 		_, ok:= p.stemMsgs[stemId]
 		if ok {
 		   panic("putting the same entry twice not supported")
 		}
-		p.stemMsgs[stemId]= StemMessage{msg:msg, t:time.Now()}
+		p.stemMsgs[stemId]= &StemMessage{msg:msg, t:time.Now()}
 	}
 
 	log.Debugf("message item relay %s", msg.Message.String())
 	out := rpcWithMessages(msg.Message)
 	if p.lineGraph {
 		var peers []peer.ID
-		//update the stem peer if it doesn't work
-		if p.stemPeer =="" || p.stemPeer == from {
+		mch, ok = p.peers[p.stemPeer]
+		//update the stem peer if the stem is dead or if it's the incoming peer
+		if !ok || p.stemPeer == from {
 			for pid := range p.peers{
 				if pid == from || pid ==peer.ID(msg.GetFrom()){
 					continue
