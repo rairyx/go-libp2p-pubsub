@@ -1,14 +1,34 @@
 package pubsub
 
 import (
+	"fmt"
+
 	pb "github.com/libp2p/go-libp2p-pubsub/pb"
 )
 
+// NewMessageCache creates a sliding window cache that remembers messages for as
+// long as `history` slots.
+//
+// When queried for messages to advertise, the cache only returns messages in
+// the last `gossip` slots.
+//
+// The `gossip` parameter must be smaller or equal to `history`, or this
+// function will panic.
+//
+// The slack between `gossip` and `history` accounts for the reaction time
+// between when a message is advertised via IHAVE gossip, and the peer pulls it
+// via an IWANT command.
 func NewMessageCache(gossip, history int) *MessageCache {
+	if gossip > history {
+		err := fmt.Errorf("invalid parameters for message cache; gossip slots (%d) cannot be larger than history slots (%d)",
+			gossip, history)
+		panic(err)
+	}
 	return &MessageCache{
 		msgs:    make(map[string]*pb.Message),
 		history: make([][]CacheEntry, history),
 		gossip:  gossip,
+		msgID:   DefaultMsgIdFn,
 	}
 }
 
@@ -16,6 +36,11 @@ type MessageCache struct {
 	msgs    map[string]*pb.Message
 	history [][]CacheEntry
 	gossip  int
+	msgID   MsgIdFunction
+}
+
+func (mc *MessageCache) SetMsgIdFn(msgID MsgIdFunction) {
+	mc.msgID = msgID
 }
 
 type CacheEntry struct {
@@ -24,7 +49,7 @@ type CacheEntry struct {
 }
 
 func (mc *MessageCache) Put(msg *pb.Message) {
-	mid := msgID(msg)
+	mid := mc.msgID(msg)
 	mc.msgs[mid] = msg
 	mc.history[0] = append(mc.history[0], CacheEntry{mid: mid, topics: msg.GetTopicIDs()})
 }

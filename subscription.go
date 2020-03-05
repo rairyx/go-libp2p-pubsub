@@ -4,17 +4,22 @@ import (
 	"context"
 )
 
+// Subscription handles the details of a particular Topic subscription.
+// There may be many subscriptions for a given Topic.
 type Subscription struct {
 	topic    string
 	ch       chan *Message
 	cancelCh chan<- *Subscription
+	ctx      context.Context
 	err      error
 }
 
+// Topic returns the topic string associated with the Subscription
 func (sub *Subscription) Topic() string {
 	return sub.topic
 }
 
+// Next returns the next message in our subscription
 func (sub *Subscription) Next(ctx context.Context) (*Message, error) {
 	select {
 	case msg, ok := <-sub.ch:
@@ -28,6 +33,15 @@ func (sub *Subscription) Next(ctx context.Context) (*Message, error) {
 	}
 }
 
+// Cancel closes the subscription. If this is the last active subscription then pubsub will send an unsubscribe
+// announcement to the network.
 func (sub *Subscription) Cancel() {
-	sub.cancelCh <- sub
+	select {
+	case sub.cancelCh <- sub:
+	case <-sub.ctx.Done():
+	}
+}
+
+func (sub *Subscription) close() {
+	close(sub.ch)
 }

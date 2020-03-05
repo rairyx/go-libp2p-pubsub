@@ -19,7 +19,7 @@ import (
 // get the initial RPC containing all of our subscriptions to send to new peers
 func (p *PubSub) getHelloPacket() *RPC {
 	var rpc RPC
-	for t := range p.myTopics {
+	for t := range p.mySubs {
 		as := &pb.RPC_SubOpts{
 			Topicid:   proto.String(t),
 			Subscribe: proto.Bool(true),
@@ -30,7 +30,7 @@ func (p *PubSub) getHelloPacket() *RPC {
 }
 
 func (p *PubSub) handleNewStream(s network.Stream) {
-	r := ggio.NewDelimitedReader(s, 1<<20)
+	r := ggio.NewDelimitedReader(s, p.maxMessageSize)
 	for {
 		rpc := new(RPC)
 		err := r.ReadMsg(&rpc.RPC)
@@ -86,7 +86,7 @@ func (p *PubSub) handleNewPeer(ctx context.Context, pid peer.ID, outgoing <-chan
 }
 
 func (p *PubSub) handlePeerEOF(ctx context.Context, s network.Stream) {
-	r := ggio.NewDelimitedReader(s, 1<<20)
+	r := ggio.NewDelimitedReader(s, p.maxMessageSize)
 	rpc := new(RPC)
 	for {
 		err := r.ReadMsg(&rpc.RPC)

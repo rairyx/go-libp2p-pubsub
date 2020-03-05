@@ -254,7 +254,7 @@ func TestReconnects(t *testing.T) {
 		t.Fatal("timed out waiting for B chan to be closed")
 	}
 
-	nSubs := len(psubs[2].myTopics["cats"])
+	nSubs := len(psubs[2].mySubs["cats"])
 	if nSubs > 0 {
 		t.Fatal(`B should have 0 subscribers for channel "cats", has`, nSubs)
 	}
@@ -1062,4 +1062,103 @@ func TestImproperlySignedMessageRejected(t *testing.T) {
 			correctMessage,
 		)
 	}
+}
+
+func TestMessageSender(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	const topic = "foobar"
+
+	hosts := getNetHosts(t, ctx, 3)
+	psubs := getPubsubs(ctx, hosts)
+
+	var msgs []*Subscription
+	for _, ps := range psubs {
+		subch, err := ps.Subscribe(topic)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		msgs = append(msgs, subch)
+	}
+
+	connect(t, hosts[0], hosts[1])
+	connect(t, hosts[1], hosts[2])
+
+	time.Sleep(time.Millisecond * 100)
+
+	for i := 0; i < 3; i++ {
+		for j := 0; j < 100; j++ {
+			msg := []byte(fmt.Sprintf("%d sent %d", i, j))
+
+			psubs[i].Publish(topic, msg)
+
+			for k, sub := range msgs {
+				got, err := sub.Next(ctx)
+				if err != nil {
+					t.Fatal(sub.err)
+				}
+				if !bytes.Equal(msg, got.Data) {
+					t.Fatal("got wrong message!")
+				}
+
+				var expectedHost int
+				if i == k {
+					expectedHost = i
+				} else if k != 1 {
+					expectedHost = 1
+				} else {
+					expectedHost = i
+				}
+
+				if got.ReceivedFrom != hosts[expectedHost].ID() {
+					t.Fatal("got wrong message sender")
+				}
+			}
+		}
+	}
+}
+
+func TestConfigurableMaxMessageSize(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	hosts := getNetHosts(t, ctx, 10)
+
+	// use a 4mb limit; default is 1mb; we'll test with a 2mb payload.
+	psubs := getPubsubs(ctx, hosts, WithMaxMessageSize(1<<22))
+
+	sparseConnect(t, hosts)
+	time.Sleep(time.Millisecond * 100)
+
+	const topic = "foobar"
+	var subs []*Subscription
+	for _, ps := range psubs {
+		subch, err := ps.Subscribe(topic)
+		if err != nil {
+			t.Fatal(err)
+		}
+		subs = append(subs, subch)
+	}
+
+	// 2mb payload.
+	msg := make([]byte, 1<<21)
+	rand.Read(msg)
+	err := psubs[0].Publish(topic, msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// make sure that all peers received the message.
+	for _, sub := range subs {
+		got, err := sub.Next(ctx)
+		if err != nil {
+			t.Fatal(sub.err)
+		}
+		if !bytes.Equal(msg, got.Data) {
+			t.Fatal("got wrong message!")
+		}
+	}
+
 }

@@ -10,6 +10,7 @@ import (
 )
 
 const (
+	defaultValidateQueueSize   = 32
 	defaultValidateConcurrency = 1024
 	defaultValidateThrottle    = 8192
 )
@@ -30,6 +31,8 @@ type ValidatorOpt func(addVal *addValReq) error
 // context-switching for lightweight tasks.
 type validation struct {
 	p *PubSub
+
+	tracer *pubsubTracer
 
 	// topicVals tracks per topic validators
 	topicVals map[string]*topicVal
@@ -80,7 +83,7 @@ type rmValReq struct {
 func newValidation() *validation {
 	return &validation{
 		topicVals:        make(map[string]*topicVal),
-		validateQ:        make(chan *validateReq, 32),
+		validateQ:        make(chan *validateReq, defaultValidateQueueSize),
 		validateThrottle: make(chan struct{}, defaultValidateThrottle),
 		validateWorkers:  runtime.NumCPU(),
 	}
@@ -90,6 +93,7 @@ func newValidation() *validation {
 // workers
 func (v *validation) Start(p *PubSub) {
 	v.p = p
+	v.tracer = p.tracer
 	for i := 0; i < v.validateWorkers; i++ {
 		go v.validateWorker()
 	}
@@ -148,6 +152,7 @@ func (v *validation) Push(src peer.ID, msg *Message) bool {
 		case v.validateQ <- &validateReq{vals, src, msg}:
 		default:
 			log.Warningf("message validation throttled; dropping message from %s", src)
+			v.tracer.RejectMessage(msg, "validation throttled")
 		}
 		return false
 	}
@@ -190,14 +195,16 @@ func (v *validation) validate(vals []*topicVal, src peer.ID, msg *Message) {
 	if msg.Signature != nil {
 		if !v.validateSignature(msg) {
 			log.Warningf("message signature validation failed; dropping message from %s", src)
+			v.tracer.RejectMessage(msg, "invalid signature")
 			return
 		}
 	}
 
 	// we can mark the message as seen now that we have verified the signature
 	// and avoid invoking user validators more than once
-	id := msgID(msg.Message)
+	id := v.p.msgID(msg.Message)
 	if !v.p.markSeen(id) {
+		v.tracer.DuplicateMessage(msg)
 		return
 	}
 
@@ -214,6 +221,7 @@ func (v *validation) validate(vals []*topicVal, src peer.ID, msg *Message) {
 	for _, val := range inline {
 		if !val.validateMsg(v.p.ctx, src, msg) {
 			log.Debugf("message validation failed; dropping message from %s", src)
+			v.tracer.RejectMessage(msg, "validation failed")
 			return
 		}
 	}
@@ -228,15 +236,13 @@ func (v *validation) validate(vals []*topicVal, src peer.ID, msg *Message) {
 			}()
 		default:
 			log.Warningf("message validation throttled; dropping message from %s", src)
+			v.tracer.RejectMessage(msg, "validation throttled")
 		}
 		return
 	}
 
 	// no async validators, send the message
-	v.p.sendMsg <- &sendReq{
-		from: src,
-		msg:  msg,
-	}
+	v.p.sendMsg <- msg
 }
 
 func (v *validation) validateSignature(msg *Message) bool {
@@ -252,13 +258,11 @@ func (v *validation) validateSignature(msg *Message) bool {
 func (v *validation) doValidateTopic(vals []*topicVal, src peer.ID, msg *Message) {
 	if !v.validateTopic(vals, src, msg) {
 		log.Warningf("message validation failed; dropping message from %s", src)
+		v.tracer.RejectMessage(msg, "validation failed")
 		return
 	}
 
-	v.p.sendMsg <- &sendReq{
-		from: src,
-		msg:  msg,
-	}
+	v.p.sendMsg <- msg
 }
 
 func (v *validation) validateTopic(vals []*topicVal, src peer.ID, msg *Message) bool {
@@ -292,6 +296,7 @@ loop:
 	}
 
 	if throttle {
+		v.tracer.RejectMessage(msg, "validation throttled")
 		return false
 	}
 
@@ -316,6 +321,7 @@ func (v *validation) validateSingleTopic(val *topicVal, src peer.ID, msg *Messag
 
 	default:
 		log.Debugf("validation throttled for topic %s", val.topic)
+		v.tracer.RejectMessage(msg, "validation throttled")
 		return false
 	}
 }
@@ -336,6 +342,18 @@ func (val *topicVal) validateMsg(ctx context.Context, src peer.ID, msg *Message)
 }
 
 /// Options
+
+// WithValidateQueueSize sets the buffer of validate queue. Defaults to 32.
+// When queue is full, validation is throttled and new messages are dropped.
+func WithValidateQueueSize(n int) Option {
+	return func(ps *PubSub) error {
+		if n > 0 {
+			ps.val.validateQ = make(chan *validateReq, n)
+			return nil
+		}
+		return fmt.Errorf("validate queue size must be > 0")
+	}
+}
 
 // WithValidateThrottle sets the upper bound on the number of active validation
 // goroutines across all topics. The default is 8192.
