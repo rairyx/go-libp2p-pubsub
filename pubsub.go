@@ -64,7 +64,7 @@ type PubSub struct {
 
         //stem message cache
 	stemMsgs map[string]*StemMessage
-        
+
 	//incoming messages to outgoing message mapping
         stemRelayMaps map[peer.ID][]peer.ID
 	//line graph for stem phase
@@ -75,7 +75,8 @@ type PubSub struct {
 
 	val *validation
 
-	phase dandelionPhase 
+	phase dandelionPhase
+
 	disc *discover
 
 	tracer *pubsubTracer
@@ -439,7 +440,7 @@ func (p *PubSub) NewEpoch() {
 			}
 		}
 	}
-
+}
 // WithDiscovery provides a discovery mechanism used to bootstrap and provide peers into PubSub
 func WithDiscovery(d discovery.Discovery, opts ...DiscoverOpt) Option {
 	return func(p *PubSub) error {
@@ -631,9 +632,9 @@ func (p *PubSub) processLoop(ctx context.Context) {
 			p.tracer.PublishMessage(msg)
 			p.pushMsg(p.host.ID(), msg)
                 //validated messages sent from local node or relayed from peer 
-		case req := <-p.sendMsg:
-			log.Infof("sending validated message %s",req.msg.Message.String())
-			p.publishMessage(req.from, req.msg.Message)
+		case msg := <-p.sendMsg:
+			log.Infof("sending validated message %s",msg.String())
+			p.publishMessage(msg)
 
 		case req := <-p.addVal:
 			p.val.AddValidator(req)
@@ -742,7 +743,7 @@ func (p *PubSub) fluff(from peer.ID, msg *Message) {
 	     msgPhase := "FLUFF"
 	     msg.Message = &pb.Message{From:msg.Message.GetFrom(),Data:msg.GetData(),Seqno:msg.GetSeqno(),TopicIDs:msg.GetTopicIDs(),Signature:msg.GetSignature(),Key:msg.GetKey(),State:&msgPhase}
      }
-     id := msgID(msg.Message)
+     id := p.msgID(msg.Message)
      if p.seenMessage(id)|| p.originalSender(msg) {
 		return
      }
@@ -767,11 +768,11 @@ func (p *PubSub) fluff(from peer.ID, msg *Message) {
 		}
        }
        //when stemmed mesage is about to fluff,the node itself should receive the message
-       p.notifySubs(msg.Message)
+       p.notifySubs(msg)
 }
 
 func (p *PubSub) relayStem(from peer.ID, msg *Message) bool {
-	id := msgID(msg.Message)
+	id := p.msgID(msg.Message)
 	if p.seenMessage(id) {
 		return false
 	}
@@ -1007,7 +1008,8 @@ func (p *PubSub) handleIncomingRPC(rpc *RPC) {
 			log.Warning("received message we didn't subscribe to. Dropping.")
 			continue
 		}
-		msg := &Message{pmsg}
+		msg := &Message{pmsg, rpc.from, nil}
+		//msg := pmsg
                 //log.Debugf("received messge: %s",msg.Message.String())
 		//phase:= getPhase()
 		log.Debugf("Dandelion phase: %d",p.phase)
@@ -1031,16 +1033,16 @@ func (p *PubSub) handleIncomingRPC(rpc *RPC) {
 }
 
 // msgID returns a unique ID of the passed Message
-func msgID(pmsg *pb.Message) string {
+func DefaultMsgIdFn(pmsg *pb.Message) string {
 	return string(pmsg.GetFrom()) + string(pmsg.GetSeqno()) + pmsg.GetState()
 }
+
 
 func stemMsgID(pmsg *pb.Message) string {
 	return string(pmsg.GetFrom()) + string(pmsg.GetSeqno())
 }
 // pushMsg pushes a message performing validation as necessary
-func (p *PubSub) pushMsg(msg *Message) {
-	src := msg.ReceivedFrom
+func (p *PubSub) pushMsg(src peer.ID, msg *Message) {
 	// reject messages from blacklisted peers
 	if p.blacklist.Contains(src) {
 		log.Warningf("dropping message from blacklisted peer %s", src)
@@ -1065,7 +1067,7 @@ func (p *PubSub) pushMsg(msg *Message) {
 	if ok {
 		delete(p.stemMsgs, stemId)
 	}
-	id := msgID(msg.Message)
+	id := p.msgID(msg.Message)
 	if p.seenMessage(id) || (src !=p.host.ID() && p.originalSender(msg)) {
 				return
 	}
@@ -1115,10 +1117,12 @@ func (p *PubSub) Join(topic string, opts ...TopicOpt) (*Topic, error) {
 
 
 
-
+/*
 func (p *PubSub) publishMessage(from peer.ID, pmsg *pb.Message) {
 	p.notifySubs(pmsg)
 	p.rt.Publish(from, pmsg)
+}
+*/
 // tryJoin is an internal function that tries to join a topic
 // Returns the topic if it can be created or found
 // Returns true if the topic was newly created, false otherwise
@@ -1240,8 +1244,8 @@ func (p *PubSub) Publish(topic string, data []byte) error {
 			return err
 		}
 	}
-
-	return t.Publish(context.TODO(), data, opts...)
+        p.publish <- &Message{m,p.host.ID(),nil}
+	return nil
 }
 
 func (p *PubSub) nextSeqno() []byte {
@@ -1250,6 +1254,15 @@ func (p *PubSub) nextSeqno() []byte {
 	binary.BigEndian.PutUint64(seqno, counter)
 	return seqno
 }
+
+// sendReq is a request to call publishMessage.
+// It is issued after message validation is done.
+/*
+type sendReq struct {
+		from peer.ID
+		msg  *Message
+}
+*/
 
 type listPeerReq struct {
 	resp  chan []peer.ID
