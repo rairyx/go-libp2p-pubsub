@@ -929,7 +929,7 @@ func TestGossipsubTreeTopology(t *testing.T) {
 	checkMessageRouting(t, "fizzbuzz", []*PubSub{psubs[9], psubs[3]}, chs)
 }
 
-func TestDandelionStemPhase(t *testing.T) {
+/*func TestDandelionStemPhase(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -1018,3 +1018,4 @@ func TestDandelionStemPhase(t *testing.T) {
 			}
 	}
 }
+*/
