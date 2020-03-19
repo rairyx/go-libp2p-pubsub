@@ -194,11 +194,6 @@ type PubSubRouter interface {
 	Leave(topic string)
 }
 
-type Message_State int32
-const (
-        Dandelion_STEM       Message_State = 0
-        Dandelion_FLUFF      Message_State = 1
-)
 type Message struct {
 	*pb.Message
 	ReceivedFrom  peer.ID
