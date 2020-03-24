@@ -3,7 +3,7 @@ package pubsub
 import (
 	"fmt"
 
-	pb "github.com/libp2p/go-libp2p-pubsub/pb"
+	pb "github.com/rairyx/go-libp2p-pubsub/pb"
 )
 
 // NewMessageCache creates a sliding window cache that remembers messages for as
