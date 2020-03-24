@@ -11,7 +11,7 @@ import (
 
 	ggio "github.com/gogo/protobuf/io"
 	proto "github.com/gogo/protobuf/proto"
-	pb "github.com/libp2p/go-libp2p-pubsub/pb"
+	pb "github.com/rairyx/go-libp2p-pubsub/pb"
 
 	ms "github.com/multiformats/go-multistream"
 )
