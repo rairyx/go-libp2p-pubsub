@@ -625,7 +625,8 @@ func (p *PubSub) processLoop(ctx context.Context) {
 	        case msg := <-p.publish:
 			log.Infof("sending message %s",msg.Message.String())
 			p.tracer.PublishMessage(msg)
-			p.pushMsg(p.host.ID(), msg)
+			//p.pushMsg(p.host.ID(), msg)
+			p.pushMsg(msg)
                 //validated messages sent from local node or relayed from peer 
 		case msg := <-p.sendMsg:
 			log.Infof("sending validated message %s",msg.String())
@@ -739,31 +740,36 @@ func (p *PubSub) fluff(from peer.ID, msg *Message) {
 	     msg.Message = &pb.Message{From:msg.Message.GetFrom(),Data:msg.GetData(),Seqno:msg.GetSeqno(),TopicIDs:msg.GetTopicIDs(),Signature:msg.GetSignature(),Key:msg.GetKey(),State:&msgPhase}
      }
      id := p.msgID(msg.Message)
-     if p.seenMessage(id)|| p.originalSender(msg) {
+     if p.seenMessage(id)||(from !=p.host.ID() && p.originalSender(msg)) {
+		p.tracer.DuplicateMessage(msg)
 		return
      }
-     p.markSeen(id)
-
-     out := rpcWithMessages(msg.Message)
-     for pid:= range p.peers{
-	if  pid == peer.ID(msg.GetFrom()) {
-			continue
-	}
-	mch, ok := p.peers[pid]
-	if !ok {
-			continue
+     //validate message before fluffing
+     if !p.val.Push(from, msg) {
+		return
+     }
+     if p.markSeen(id) {
+	     out := rpcWithMessages(msg.Message)
+	     for pid:= range p.peers{
+		if  pid == peer.ID(msg.GetFrom()) {
+				continue
 		}
+		mch, ok := p.peers[pid]
+		if !ok {
+				continue
+			}
 
-		select {
-		case mch <- out:
-			log.Debugf("message %s fluffed to peer %s", msg.String(),pid)
-		default:
-			log.Infof("dropping message to peer %s: queue full", pid)
-			// Drop it. The peer is too slow.
-		}
-       }
-       //when stemmed mesage is about to fluff,the node itself should receive the message
-       p.notifySubs(msg)
+			select {
+			case mch <- out:
+				log.Debugf("message %s fluffed to peer %s", msg.String(),pid)
+			default:
+				log.Infof("dropping message to peer %s: queue full", pid)
+				// Drop it. The peer is too slow.
+			}
+	     }
+     //when stemmed mesage is about to fluff,the node itself should receive the message
+     	     p.notifySubs(msg)
+     }
 }
 
 func (p *PubSub) relayStem(from peer.ID, msg *Message) bool {
@@ -1004,9 +1010,6 @@ func (p *PubSub) handleIncomingRPC(rpc *RPC) {
 			continue
 		}
 		msg := &Message{pmsg, rpc.from, nil}
-		//msg := pmsg
-                //log.Debugf("received messge: %s",msg.Message.String())
-		//phase:= getPhase()
 		log.Debugf("Dandelion phase: %d",p.phase)
 		if (msg.GetState() == "STEM") {
 			if  (p.phase == stem ){
@@ -1020,7 +1023,8 @@ func (p *PubSub) handleIncomingRPC(rpc *RPC) {
 			}
 	        //Already fluffed, State == "FlUFF"
 		}else {
-			p.pushMsg(rpc.from, msg)
+			msg := &Message{pmsg, rpc.from, nil}
+			p.pushMsg(msg)
 		}
 	}
 
@@ -1037,8 +1041,9 @@ func stemMsgID(pmsg *pb.Message) string {
 	return string(pmsg.GetFrom()) + string(pmsg.GetSeqno())
 }
 // pushMsg pushes a message performing validation as necessary
-func (p *PubSub) pushMsg(src peer.ID, msg *Message) {
+func (p *PubSub) pushMsg(msg *Message) {
 	// reject messages from blacklisted peers
+	src := msg.ReceivedFrom
 	if p.blacklist.Contains(src) {
 		log.Warningf("dropping message from blacklisted peer %s", src)
 		p.tracer.RejectMessage(msg, "blacklisted peer")
@@ -1064,6 +1069,7 @@ func (p *PubSub) pushMsg(src peer.ID, msg *Message) {
 	}
 	id := p.msgID(msg.Message)
 	if p.seenMessage(id) || (src !=p.host.ID() && p.originalSender(msg)) {
+				p.tracer.DuplicateMessage(msg)
 				return
 	}
 	if !p.val.Push(src, msg) {
@@ -1112,12 +1118,6 @@ func (p *PubSub) Join(topic string, opts ...TopicOpt) (*Topic, error) {
 
 
 
-/*
-func (p *PubSub) publishMessage(from peer.ID, pmsg *pb.Message) {
-	p.notifySubs(pmsg)
-	p.rt.Publish(from, pmsg)
-}
-*/
 // tryJoin is an internal function that tries to join a topic
 // Returns the topic if it can be created or found
 // Returns true if the topic was newly created, false otherwise

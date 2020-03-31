@@ -1,4 +1,4 @@
-module github.com/libp2p/go-libp2p-pubsub
+module github.com/rairyx/go-libp2p-pubsub
 
 require (
 	github.com/gogo/protobuf v1.3.1
