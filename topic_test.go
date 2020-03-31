@@ -391,7 +391,7 @@ func TestSubscriptionManyNotifications(t *testing.T) {
 
 	const topic = "foobar"
 
-	const numHosts = 33
+	const numHosts = 23
 	hosts := getNetHosts(t, ctx, numHosts)
 	topics := getTopics(getPubsubs(ctx, hosts), topic)
 	evts := getTopicEvts(topics)
@@ -496,14 +496,14 @@ func TestSubscriptionNotificationSubUnSub(t *testing.T) {
 
 	const topic = "foobar"
 
-	const numHosts = 35
+	const numHosts = 23
 	hosts := getNetHosts(t, ctx, numHosts)
 	topics := getTopics(getPubsubs(ctx, hosts), topic)
 
 	for i := 1; i < numHosts; i++ {
 		connect(t, hosts[0], hosts[i])
 	}
-	time.Sleep(time.Millisecond * 100)
+	time.Sleep(time.Millisecond * 500)
 
 	notifSubThenUnSub(ctx, t, topics)
 }
