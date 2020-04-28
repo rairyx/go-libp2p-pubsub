@@ -26,7 +26,7 @@ import (
 
 
 const letterBytes = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
-const DandelionEpochInterval = 5 * time.Second
+const DandelionEpochInterval = 600 * time.Second
 const DandelionStemCheckInterval = 500 * time.Millisecond
 const DandelionStemExpireSpan = 60 * time.Second 
 
